@@ -1,4 +1,7 @@
-"""Patch triton-windows (AMD HIP backend) to work around a crash in `TritonAMDFoldTrueCmpI`.
+"""PROVISIONAL WORKAROUND, USE AT YOUR OWN RISK — not a fix, correctness not proven.
+暫定的な回避策です。自己責任で使用してください（根本修正ではなく、正しさは保証しません）。
+
+Patch triton-windows (AMD HIP backend) to work around a crash in `TritonAMDFoldTrueCmpI`.
 triton-windows（AMD バックエンド）の `TritonAMDFoldTrueCmpI` パスのクラッシュを回避するパッチ。
 
 Problem / 問題:
@@ -10,10 +13,12 @@ Problem / 問題:
 
 Workaround / 回避策:
     `TritonAMDFoldTrueCmpI` only folds integer comparisons that are known to be always true.
-    It is an optimization; skipping it does not change results (verified: gradients match eager).
+    As far as I understand it is an optimization, so skipping it should not change results
+    (checked locally: gradients match eager). This is not guaranteed.
     This script makes the pass skippable via the env var TRITON_AMD_SKIP_FOLD_TRUE_CMPI=1
     (rocm_env.py sets it by default).
-    このパスは「常に真になる比較の畳み込み」だけを行う最適化なので、飛ばしても計算結果は変わらない。
+    このパスは「常に真になる比較の畳み込み」を行う最適化と理解しており、飛ばしても計算結果は変わらない
+    と考えている（手元では勾配の一致を確認）。ただし保証ではない。
 
 Usage / 使い方 (idempotent, re-run after reinstalling triton-windows):
     python patch_triton.py

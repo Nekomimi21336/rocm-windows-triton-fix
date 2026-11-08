@@ -1,10 +1,19 @@
 # rocm-windows-triton-fix
 
-**Triton / `torch.compile` on Windows + AMD Radeon (ROCm), with a workaround for a `TritonAMDFoldTrueCmpI` crash.**
-Windows ＋ AMD Radeon（ROCm）で Triton / `torch.compile` を動かすための手順と、`TritonAMDFoldTrueCmpI` クラッシュの回避パッチ。
+**A temporary workaround for running Triton / `torch.compile` on Windows + AMD Radeon (ROCm).**
+Windows ＋ AMD Radeon（ROCm）で Triton / `torch.compile` を動かすための、**暫定的な回避策**。
 
-> Status: tested on one machine only (RX 7900 XTX / gfx1100). Community workaround, not an official AMD or Triton fix.
-> 状態: 1台のマシン（RX 7900 XTX / gfx1100）でのみ検証。AMD・Triton 公式の修正ではありません。
+> [!WARNING]
+> **自己責任でご利用ください / Use at your own risk.**
+> - これは根本的な修正ではなく、**一時的な回避策**です。正しさを証明したものではありません。
+> - 1台のマシン（RX 7900 XTX / gfx1100）で、限られたケースを確認しただけです。他の GPU・バージョン・モデルでの動作は保証しません。
+> - AMD・Triton・PyTorch の公式な修正や推奨ではなく、それらのプロジェクトとは無関係です。
+> - 使う場合は、同梱のテストや自分のモデルで、コンパイル前後の結果が一致することを必ず確認してください。
+>
+> - This is **not a fix**, only a provisional workaround. Its correctness is **not proven**.
+> - Checked on a single machine (RX 7900 XTX / gfx1100) for a limited set of cases. No guarantee for other GPUs, versions or models.
+> - Not an official or recommended solution from AMD, Triton or PyTorch, and not affiliated with them.
+> - If you use it, verify that compiled and eager results match for your own workload.
 
 ---
 
@@ -65,12 +74,18 @@ fix on   : PASS: compiled fwd+bwd OK, grad rel err vs eager fp32 = 7.79e-03   (b
 また、実際の言語モデル（Transformer 0.11B、線形注意系モデル 0.12B）でも、fp32 ではコンパイル前後の勾配が
 相対誤差 1e-6〜1e-7 で一致することを確認した。
 
-### 不具合の詳細
-- 落ちるパス: `TritonAMDFoldTrueCmpI`（`triton/backends/amd/compiler.py` の `make_ttgir` 内 `add_fold_true_cmpi`）
-- 対象: torch.compile が生成した、転置を含む per-head リダクションと SiLU 勾配を融合した逆伝播カーネル
-- MLIR の再現データ: [`repro/fold_true_cmpi.mlir`](repro/fold_true_cmpi.mlir)（Triton が出力した reproducer。ユーザー名を含むパスは伏せてある）
-- 回避策の妥当性: このパスは「常に真と分かっている整数比較を畳み込む」最適化のみを行うため、飛ばしても意味は変わらない
-  （性能がわずかに落ちる可能性はある）
+### 症状と回避策
+- 落ちる箇所: `TritonAMDFoldTrueCmpI`（`triton/backends/amd/compiler.py` の `make_ttgir` 内 `add_fold_true_cmpi`）
+- 発生したケース: torch.compile が生成した、転置を含むヘッドごとのリダクションと SiLU の勾配を融合した逆伝播カーネル
+- 回避策: このパスを実行しないようにする。このパスは「常に真と分かっている整数比較を畳み込む」最適化と理解しており、
+  飛ばしても計算の意味は変わらないと考えている。ただし**これはあくまで推測と手元の確認に基づくもので、保証ではない**
+- 考えられる副作用: 最適化が1つ減るため、性能がわずかに落ちる可能性がある。確認していないケースで別の問題が起きる可能性も否定できない
+- 参考資料: Triton が出力した MLIR の再現データを [`repro/fold_true_cmpi.mlir`](repro/fold_true_cmpi.mlir) に置いている（ユーザー名を含むパスは伏せてある）
+
+### 回避策を外すには
+- 一時的に無効化: 環境変数 `TRITON_AMD_SKIP_FOLD_TRUE_CMPI=0` を設定する（`rocm_env.py` より先に設定すること）
+- 完全に元に戻す: `pip install --force-reinstall "triton-windows==3.5.1.post24"` で triton を入れ直す
+- 新しいバージョンの triton-windows では、この問題が解消されている可能性がある。その場合はこの回避策は不要
 
 ### その他の注意
 - **venv の `python.exe` はランチャー**で、本体の Python を子プロセスとして起動する。`timeout` などで親だけを止めると子が残る
@@ -83,8 +98,9 @@ fix on   : PASS: compiled fwd+bwd OK, grad rel err vs eager fp32 = 7.79e-03   (b
 ## English
 
 ### What this is
-A setup guide plus a small patch that lets `torch.compile` (Inductor → Triton) run on an AMD Radeon GPU on **native Windows**,
-using AMD's official ROCm 7.2.1 Windows PyTorch wheels and the community `triton-windows` package (which has an AMD HIP backend).
+A setup guide plus a small, **provisional** patch that let `torch.compile` (Inductor → Triton) run on an AMD Radeon GPU on
+**native Windows**, using AMD's official ROCm 7.2.1 Windows PyTorch wheels and the community `triton-windows` package
+(which has an AMD HIP backend). Use at your own risk (see the warning above).
 
 Without the patch, compiling some kernels (e.g. the backward of a per-head RMSNorm fused with a SiLU gate) crashes in the
 AMD-specific pass `TritonAMDFoldTrueCmpI` with `RuntimeError: PassManager::run failed`.
@@ -111,15 +127,24 @@ python tests/repro_fold_true_cmpi.py            # passes with the workaround
 On real models (a 0.11B Transformer and a 0.12B linear-attention-style model), gradients with and without compile
 match to 1e-6–1e-7 relative error in fp32.
 
-### Why skipping the pass is safe
-`TritonAMDFoldTrueCmpI` only folds integer comparisons that are provably always true. It is a pure optimization, so
-skipping it does not change semantics (there may be a small performance cost). The MLIR reproducer emitted by Triton is in
-[`repro/fold_true_cmpi.mlir`](repro/fold_true_cmpi.mlir) (user paths redacted) for anyone who wants to fix the pass itself.
+### Why skipping the pass is expected to be harmless (not guaranteed)
+As far as I understand, `TritonAMDFoldTrueCmpI` only folds integer comparisons that are known to be always true, i.e. it is
+an optimization, so skipping it should not change semantics. **This is an assumption backed only by local checks, not a
+proof.** Possible side effects: a small performance cost, and unknown behaviour in cases that were not tested.
+The MLIR reproducer emitted by Triton is kept in [`repro/fold_true_cmpi.mlir`](repro/fold_true_cmpi.mlir) for reference
+(user paths redacted).
+
+### Turning the workaround off
+- Temporarily: set `TRITON_AMD_SKIP_FOLD_TRUE_CMPI=0` (before importing `rocm_env`).
+- Completely: `pip install --force-reinstall "triton-windows==3.5.1.post24"`.
+- Newer triton-windows releases may no longer have this problem, in which case the workaround is unnecessary.
 
 ### Notes
 - A venv's `python.exe` on Windows is a launcher that spawns the real interpreter; killing only the launcher leaves the child running.
 - Spaces in the project path trigger a harmless warning from ROCm's `offload-arch.exe`.
-- This is a community workaround tested on a single machine. Not affiliated with AMD or the Triton project.
+- This is a personal, provisional workaround tested on a single machine. Not affiliated with AMD, Triton or PyTorch.
 
 ## License
-MIT (this repository's scripts only). Triton, PyTorch and ROCm are under their own licenses and are not redistributed here.
+MIT (this repository's scripts only), provided "AS IS" without warranty of any kind — see [LICENSE](LICENSE).
+Triton, PyTorch and ROCm are under their own licenses and are not redistributed here.
+本リポジトリのスクリプトは MIT ライセンスで、無保証（AS IS）で提供します。Triton・PyTorch・ROCm は含まれていません。
